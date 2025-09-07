@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<!-- saved from url=(0012)about:srcdoc -->
+<html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html-to-image/1.11.13/html-to-image.min.js" integrity="sha512-iZ2ORl595Wx6miw+GuadDet4WQbdSWS3JLMoNfY8cRGoEFy6oT3G9IbcrBeL6AfkgpA51ETt/faX6yLV+/gFJg==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script>
+      (function() {
+        const originalConsole = window.console;
+        window.console = {
+          log: (...args) => {
+            originalConsole.log(...args);
+            window.parent.postMessage({ type: 'console', message: args.join(' ') }, '*');
+          },
+          error: (...args) => {
+            originalConsole.error(...args);
+            window.parent.postMessage({ type: 'console', message: 'Error: ' + args.join(' ') }, '*');
+          },
+          warn: (...args) => {
+            originalConsole.warn(...args);
+            window.parent.postMessage({ type: 'console', message: 'Warning: ' + args.join(' ') }, '*');
+          }
+        };
+
+        let requestId = 0;
+        let callbacksMap = new Map();
+        let streamControllers = new Map();
+        
+        window.claude = {
+          complete: (prompt) => {
+            return new Promise((resolve, reject) => {
+              const id = requestId++;
+              callbacksMap.set(id, { resolve, reject });
+              window.parent.postMessage({ type: 'claudeComplete', id, prompt }, '*');
+            });
+          }
+        };
+
+        window.storage = {
+          get: (key, shared = false) => {
+            return new Promise((resolve, reject) => {
+              const id = requestId++;
+              callbacksMap.set(id, { resolve, reject });
+              window.parent.postMessage({ type: 'storageGet', id, key, shared }, '*');
+            });
+          },
+          set: (key, value, shared = false) => {
+            return new Promise((resolve, reject) => {
+              const id = requestId++;
+              callbacksMap.set(id, { resolve, reject });
+              window.parent.postMessage({ type: 'storageSet', id, key, value, shared }, '*');
+            });
+          },
+          delete: (key, shared = false) => {
+            return new Promise((resolve, reject) => {
+              const id = requestId++;
+              callbacksMap.set(id, { resolve, reject });
+              window.parent.postMessage({ type: 'storageDelete', id, key, shared }, '*');
+            });
+          },
+          list: (prefix, shared = false) => {
+            return new Promise((resolve, reject) => {
+              const id = requestId++;
+              callbacksMap.set(id, { resolve, reject });
+              window.parent.postMessage({ type: 'storageList', id, prefix, shared }, '*');
+            });
+          }
+        };
+
+        let pendingBlobs = new Map();
+        URL.createObjectURL = (blob) => {
+          // Store the blob and create an ID and URL for it
+          const blobId = `blob-${Date.now()}-${Math.random()}`;
+          pendingBlobs.set(blobId, blob);
+          return `blob-request://${blobId}`;
+        };
+
+        URL.revokeObjectURL = (url) => {
+          // Remove the blob from our store
+          const blobId = url.replace("blob-request://", "");
+          pendingBlobs.delete(blobId);
+        };
+
+        const getBlobFromURL = (url) => {
+          const blobId = url.replace("blob-request://", "");
+          return pendingBlobs.get(blobId);
+        };
+
+        // Override global fetch with streaming support
+        window.fetch = (url, init = {}) => {
+          return new Promise((resolve, reject) => {
+            const id = requestId++;
+            const channelId = `fetch-${id}-${Date.now()}`;
+            
+            callbacksMap.set(id, { 
+              resolve: (response) => {
+                // Create a ReadableStream for the response body
+                const stream = new ReadableStream({
+                  start(controller) {
+                    streamControllers.set(channelId, controller);
+                  },
+                  cancel() {
+                    streamControllers.delete(channelId);
+                  }
+                });
+                
+                // Create and return the Response with the stream
+                resolve(new Response(stream, {
+                  status: response.status,
+                  statusText: response.statusText,
+                  headers: response.headers
+                }));
+              },
+              reject,
+              channelId
+            });
+            
+            window.parent.postMessage({
+              type: 'proxyFetch',
+              id,
+              url,
+              init,
+              channelId
+            }, '*');
+          });
+        };
+
+        window.addEventListener('message', async (event) => {
+          if (event.data.type === 'takeScreenshot') {
+            const rootElement = document.getElementById('artifacts-component-root-html');
+            if (!rootElement) {
+              window.parent.postMessage({
+                type: 'screenshotError',
+                error: new Error('Root element not found'),
+              }, '*');
+            }
+            const screenshot = await htmlToImage.toPng(rootElement, {
+              imagePlaceholder:
+                "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAAXNSR0IArs4c6QAAAA1JREFUGFdjePDgwX8ACOQDoNsk0PMAAAAASUVORK5CYII=",
+            });
+            window.parent.postMessage({
+              type: 'screenshotData',
+              data: screenshot,
+            }, '*');
+          } else if (event.data.type === 'claudeComplete') {
+            const callback = callbacksMap.get(event.data.id);
+            if (event.data.error) {
+              callback.reject(new Error(event.data.error));
+            } else {
+              callback.resolve(event.data.completion);
+            }
+            callbacksMap.delete(event.data.id);
+          } else if (event.data.type === 'proxyFetchResponse') {
+            const callback = callbacksMap.get(event.data.id);
+            if (event.data.error) {
+              callback.reject(new Error(event.data.error));
+              callbacksMap.delete(event.data.id);
+            } else {
+              // Initial response with headers, status, etc.
+              callback.resolve({
+                status: event.data.status,
+                statusText: event.data.statusText,
+                headers: event.data.headers
+              });
+              // Don't delete the callback yet if streaming
+              if (!event.data.body) {
+                callbacksMap.delete(event.data.id);
+              }
+            }
+          } else if (event.data.type === 'proxyFetchStream') {
+            // Handle streaming data chunks
+            const controller = streamControllers.get(event.data.channelId);
+            if (controller) {
+              if (event.data.error) {
+                controller.error(new Error(event.data.error));
+                streamControllers.delete(event.data.channelId);
+              } else if (event.data.done) {
+                controller.close();
+                streamControllers.delete(event.data.channelId);
+                // Clean up the callback
+                const callback = Array.from(callbacksMap.entries()).find(
+                  ([_, value]) => value.channelId === event.data.channelId
+                );
+                if (callback) {
+                  callbacksMap.delete(callback[0]);
+                }
+              } else if (event.data.chunk) {
+                controller.enqueue(new Uint8Array(event.data.chunk));
+              }
+            }
+          } else if (event.data.type === 'storageGet') {
+            const callback = callbacksMap.get(event.data.id);
+            if (event.data.error) {
+              callback.reject(new Error(event.data.error));
+            } else {
+              callback.resolve(event.data.result);
+            }
+            callbacksMap.delete(event.data.id);
+          } else if (event.data.type === 'storageSet') {
+            const callback = callbacksMap.get(event.data.id);
+            if (event.data.error) {
+              callback.reject(new Error(event.data.error));
+            } else {
+              callback.resolve(event.data.result);
+            }
+            callbacksMap.delete(event.data.id);
+          } else if (event.data.type === 'storageDelete') {
+            const callback = callbacksMap.get(event.data.id);
+            if (event.data.error) {
+              callback.reject(new Error(event.data.error));
+            } else {
+              callback.resolve(event.data.result);
+            }
+            callbacksMap.delete(event.data.id);
+          } else if (event.data.type === 'storageList') {
+            const callback = callbacksMap.get(event.data.id);
+            if (event.data.error) {
+              callback.reject(new Error(event.data.error));
+            } else {
+              callback.resolve(event.data.result);
+            }
+            callbacksMap.delete(event.data.id);
+          }
+        });
+
+        window.addEventListener('click', (event) => {
+          const isEl = event.target instanceof HTMLElement;
+          if (!isEl) return;
+    
+          // find ancestor links
+          const linkEl = event.target.closest("a");
+          if (!linkEl || !linkEl.href) return;
+    
+          event.preventDefault();
+          event.stopImmediatePropagation();
+    
+          if (linkEl.href.startsWith("blob-request:")) {
+            const blob = getBlobFromURL(linkEl.href);
+            if (!blob) return;
+            void blob.arrayBuffer().then((data) => {
+              window.parent.postMessage({
+                type: "downloadFile",
+                filename: linkEl.download,
+                data,
+                mimeType: blob.type || "application/octet-stream",
+              });
+            });
+          } else if (linkEl.href.startsWith("data:")) {
+            const [header, base64Data] = linkEl.href.split(",");
+            const mimeMatch = header.match(/data:([^;]+)/);
+            const mimeType = mimeMatch ? mimeMatch[1] : "application/octet-stream";
+            const binaryString = atob(base64Data);
+            const data = Uint8Array.from(binaryString, (c) =>
+              c.charCodeAt(0),
+            ).buffer;
+            window.parent.postMessage({
+              type: "downloadFile",
+              filename: linkEl.download,
+              data,
+              mimeType,
+            });
+          } else {
+            let linkUrl;
+            try {
+              linkUrl = new URL(linkEl.href);
+            } catch (error) {
+              return;
+            }
+    
+            if (linkUrl.hostname === window.location.hostname) return;
+      
+            window.parent.postMessage({
+              type: 'openExternal',
+              href: linkEl.href,
+            }, '*');
+          }
+      });
+
+        const originalOpen = window.open;
+        window.open = function (url) {
+          window.parent.postMessage({
+            type: "openExternal",
+            href: url,
+          }, "*");
+        };
+
+        window.addEventListener('error', (event) => {
+          window.parent.postMessage({ type: 'console', message: 'Uncaught Error: ' + event.message }, '*');
+        });
+      })();
+    </script>
+  
+  
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DealershipAI Dashboard</title>
+
+  <!-- React and ReactDOM UMD builds -->
+  <script src="https://unpkg.com/react@17/umd/react.production.min.js" crossorigin=""></script>
+  <script src="https://unpkg.com/react-dom@17/umd/react-dom.production.min.js" crossorigin=""></script>
+
+  <!-- Recharts UMD (for charts) -->
+  <script src="https://unpkg.com/recharts/umd/Recharts.min.js"></script>
+
+  <!-- Tailwind (CDN) and Babel for JSX -->
+  <script src="https://cdn.tailwindcss.com/"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="bg-gray-950 text-white" id="artifacts-component-root-html">
+  <div id="app"></div>
+
+  <script type="text/babel">
+    // Pull components out of Recharts' UMD bundle
+    const { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, AreaChart, Area } = Recharts;
+    
+    // Pull React hooks from global React object
+    const { useState, useEffect, useRef, useMemo } = React;
+
+    function DealershipDashboard() {
+      const [selectedBrand, setSelectedBrand] = useState('all');
+      const [timeRange, setTimeRange] = useState('7d');
+      const [activeMetric, setActiveMetric] = useState('revenue');
+      const [isLoading, setIsLoading] = useState(true);
+      
+      // Simulated data - in production, this would come from your API
+      const mockData = useMemo(() => ({
+        summary: {
+          totalRevenue: 2847000,
+          totalVehicles: 187,
+          avgDealTime: 3.2,
+          customerSatisfaction: 4.8,
+          revenueChange: 12.5,
+          vehiclesChange: -2.3,
+          dealTimeChange: -15.0,
+          satisfactionChange: 5.2
+        },
+        brandPerformance: [
+          { brand: 'Mercedes', revenue: 980000, units: 42, margin: 18.5 },
+          { brand: 'BMW', revenue: 760000, units: 38, margin: 17.2 },
+          { brand: 'Audi', revenue: 620000, units: 45, margin: 16.8 },
+          { brand: 'Porsche', revenue: 487000, units: 22, margin: 22.3 }
+        ],
+        inventoryHealth: {
+          optimal: 45,
+          moderate: 30,
+          critical: 25
+        },
+        revenueTimeline: [
+          { date: 'Mon', revenue: 380000, leads: 124, conversions: 18 },
+          { date: 'Tue', revenue: 420000, leads: 142, conversions: 21 },
+          { date: 'Wed', revenue: 395000, leads: 138, conversions: 19 },
+          { date: 'Thu', revenue: 445000, leads: 156, conversions: 24 },
+          { date: 'Fri', revenue: 480000, leads: 168, conversions: 28 },
+          { date: 'Sat', revenue: 520000, leads: 185, conversions: 32 },
+          { date: 'Sun', revenue: 410000, leads: 145, conversions: 22 }
+        ],
+        topDeals: [
+          { id: 1, customer: 'John Anderson', vehicle: '2024 Porsche 911 Turbo', amount: 285000, status: 'completed' },
+          { id: 2, customer: 'Sarah Mitchell', vehicle: '2024 Mercedes S-Class', amount: 175000, status: 'pending' },
+          { id: 3, customer: 'Michael Chen', vehicle: '2024 BMW M5', amount: 145000, status: 'completed' },
+          { id: 4, customer: 'Emma Wilson', vehicle: '2024 Audi RS7', amount: 135000, status: 'processing' }
+        ]
+      }), []);
+
+      useEffect(() => {
+        // Simulate loading
+        const timer = setTimeout(() => setIsLoading(false), 1000);
+        return () => clearTimeout(timer);
+      }, []);
+
+      const formatCurrency = (value) => {
+        return new Intl.NumberFormat('en-US', {
+          style: 'currency',
+          currency: 'USD',
+          minimumFractionDigits: 0,
+          maximumFractionDigits: 0
+        }).format(value);
+      };
+
+      const MetricCard = ({ title, value, change, icon, trend }) => (
+        <div className="bg-gray-900 rounded-xl p-6 border border-gray-800 hover:border-gray-700 transition-colors">
+          <div className="flex items-center justify-between mb-4">
+            <span className="text-gray-400 text-sm font-medium">{title}</span>
+            <div className="text-2xl">{icon}</div>
+          </div>
+          <div className="flex items-end justify-between">
+            <div>
+              <div className="text-3xl font-bold text-white">{value}</div>
+              {change !== undefined && (
+                <div className={`flex items-center mt-2 text-sm ${change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                  <span>{change >= 0 ? '↑' : '↓'}</span>
+                  <span className="ml-1">{Math.abs(change)}%</span>
+                  <span className="ml-2 text-gray-500">vs last period</span>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      );
+
+      const inventoryColors = ['#10b981', '#eab308', '#ef4444'];
+
+      if (isLoading) {
+        return (
+          <div className="min-h-screen flex items-center justify-center">
+            <div className="text-center">
+              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto"></div>
+              <p className="mt-4 text-gray-400">Loading dashboard...</p>
+            </div>
+          </div>
+        );
+      }
+
+      return (
+        <div className="min-h-screen bg-gray-950 text-white p-6">
+          {/* Header */}
+          <div className="mb-8">
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h1 className="text-4xl font-bold text-white mb-2">DealershipAI Dashboard</h1>
+                <p className="text-gray-400">Real-time performance metrics and insights</p>
+              </div>
+              <div className="flex gap-3">
+                <select 
+                  className="bg-gray-900 border border-gray-800 rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-blue-500"
+                  value={selectedBrand}
+                  onChange={(e) => setSelectedBrand(e.target.value)}
+                >
+                  <option value="all">All Brands</option>
+                  <option value="mercedes">Mercedes</option>
+                  <option value="bmw">BMW</option>
+                  <option value="audi">Audi</option>
+                  <option value="porsche">Porsche</option>
+                </select>
+                <select 
+                  className="bg-gray-900 border border-gray-800 rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-blue-500"
+                  value={timeRange}
+                  onChange={(e) => setTimeRange(e.target.value)}
+                >
+                  <option value="24h">Last 24 Hours</option>
+                  <option value="7d">Last 7 Days</option>
+                  <option value="30d">Last 30 Days</option>
+                  <option value="90d">Last Quarter</option>
+                </select>
+                <button className="bg-blue-600 hover:bg-blue-700 px-6 py-2 rounded-lg text-sm font-medium transition-colors">
+                  Export Report
+                </button>
+              </div>
+            </div>
+
+            {/* Summary Metrics */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+              <MetricCard
+                title="Total Revenue"
+                value={formatCurrency(mockData.summary.totalRevenue)}
+                change={mockData.summary.revenueChange}
+                icon="💰"
+              />
+              <MetricCard
+                title="Vehicles Sold"
+                value={mockData.summary.totalVehicles}
+                change={mockData.summary.vehiclesChange}
+                icon="🚗"
+              />
+              <MetricCard
+                title="Avg Deal Time"
+                value={`${mockData.summary.avgDealTime} days`}
+                change={mockData.summary.dealTimeChange}
+                icon="⏱️"
+              />
+              <MetricCard
+                title="Customer Satisfaction"
+                value={`${mockData.summary.customerSatisfaction}/5.0`}
+                change={mockData.summary.satisfactionChange}
+                icon="⭐"
+              />
+            </div>
+
+            {/* Main Content Grid */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
+              {/* Revenue Timeline */}
+              <div className="lg:col-span-2 bg-gray-900 rounded-xl p-6 border border-gray-800">
+                <div className="flex items-center justify-between mb-6">
+                  <h2 className="text-xl font-semibold">Revenue & Activity</h2>
+                  <div className="flex gap-2">
+                    <button 
+                      className={`px-3 py-1 rounded-lg text-sm transition-colors ${activeMetric === 'revenue' ? 'bg-blue-600' : 'bg-gray-800 hover:bg-gray-700'}`}
+                      onClick={() => setActiveMetric('revenue')}
+                    >
+                      Revenue
+                    </button>
+                    <button 
+                      className={`px-3 py-1 rounded-lg text-sm transition-colors ${activeMetric === 'leads' ? 'bg-blue-600' : 'bg-gray-800 hover:bg-gray-700'}`}
+                      onClick={() => setActiveMetric('leads')}
+                    >
+                      Leads
+                    </button>
+                    <button 
+                      className={`px-3 py-1 rounded-lg text-sm transition-colors ${activeMetric === 'conversions' ? 'bg-blue-600' : 'bg-gray-800 hover:bg-gray-700'}`}
+                      onClick={() => setActiveMetric('conversions')}
+                    >
+                      Conversions
+                    </button>
+                  </div>
+                </div>
+                <ResponsiveContainer width="100%" height={300}>
+                  <AreaChart data={mockData.revenueTimeline}>
+                    <defs>
+                      <linearGradient id="colorRevenue" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.8}/>
+                        <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                    <XAxis dataKey="date" stroke="#9ca3af" />
+                    <YAxis stroke="#9ca3af" />
+                    <Tooltip 
+                      contentStyle={{ backgroundColor: '#1f2937', border: 'none', borderRadius: '8px' }}
+                      labelStyle={{ color: '#9ca3af' }}
+                    />
+                    <Area 
+                      type="monotone" 
+                      dataKey={activeMetric} 
+                      stroke="#3b82f6" 
+                      fillOpacity={1} 
+                      fill="url(#colorRevenue)" 
+                    />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+
+              {/* Inventory Health */}
+              <div className="bg-gray-900 rounded-xl p-6 border border-gray-800">
+                <h2 className="text-xl font-semibold mb-6">Inventory Health</h2>
+                <ResponsiveContainer width="100%" height={300}>
+                  <PieChart>
+                    <Pie
+                      data={[
+                        { name: 'Optimal', value: mockData.inventoryHealth.optimal },
+                        { name: 'Moderate', value: mockData.inventoryHealth.moderate },
+                        { name: 'Critical', value: mockData.inventoryHealth.critical }
+                      ]}
+                      cx="50%"
+                      cy="50%"
+                      labelLine={false}
+                      label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                      outerRadius={80}
+                      fill="#8884d8"
+                      dataKey="value"
+                    >
+                      {inventoryColors.map((color, index) => (
+                        <Cell key={`cell-${index}`} fill={color} />
+                      ))}
+                    </Pie>
+                    <Tooltip contentStyle={{ backgroundColor: '#1f2937', border: 'none', borderRadius: '8px' }} />
+                  </PieChart>
+                </ResponsiveContainer>
+                <div className="mt-4 space-y-2">
+                  <div className="flex items-center justify-between text-sm">
+                    <div className="flex items-center gap-2">
+                      <div className="w-3 h-3 bg-green-500 rounded-full"></div>
+                      <span className="text-gray-400">Optimal ({"<"}30 days)</span>
+                    </div>
+                    <span className="font-medium">{mockData.inventoryHealth.optimal}%</span>
+                  </div>
+                  <div className="flex items-center justify-between text-sm">
+                    <div className="flex items-center gap-2">
+                      <div className="w-3 h-3 bg-yellow-500 rounded-full"></div>
+                      <span className="text-gray-400">Moderate (30-60 days)</span>
+                    </div>
+                    <span className="font-medium">{mockData.inventoryHealth.moderate}%</span>
+                  </div>
+                  <div className="flex items-center justify-between text-sm">
+                    <div className="flex items-center gap-2">
+                      <div className="w-3 h-3 bg-red-500 rounded-full"></div>
+                      <span className="text-gray-400">Critical ({">"}60 days)</span>
+                    </div>
+                    <span className="font-medium">{mockData.inventoryHealth.critical}%</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Bottom Section */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Brand Performance */}
+              <div className="bg-gray-900 rounded-xl p-6 border border-gray-800">
+                <h2 className="text-xl font-semibold mb-6">Brand Performance</h2>
+                <ResponsiveContainer width="100%" height={250}>
+                  <BarChart data={mockData.brandPerformance}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                    <XAxis dataKey="brand" stroke="#9ca3af" />
+                    <YAxis stroke="#9ca3af" />
+                    <Tooltip 
+                      contentStyle={{ backgroundColor: '#1f2937', border: 'none', borderRadius: '8px' }}
+                      formatter={(value, name) => {
+                        if (name === 'revenue') return formatCurrency(value);
+                        if (name === 'margin') return `${value}%`;
+                        return value;
+                      }}
+                    />
+                    <Bar dataKey="revenue" fill="#3b82f6" radius={[8, 8, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+
+              {/* Recent Deals */}
+              <div className="bg-gray-900 rounded-xl p-6 border border-gray-800">
+                <h2 className="text-xl font-semibold mb-6">Recent High-Value Deals</h2>
+                <div className="space-y-4">
+                  {mockData.topDeals.map((deal) => (
+                    <div key={deal.id} className="flex items-center justify-between p-3 bg-gray-800 rounded-lg hover:bg-gray-750 transition-colors">
+                      <div className="flex-1">
+                        <div className="font-medium text-white">{deal.customer}</div>
+                        <div className="text-sm text-gray-400">{deal.vehicle}</div>
+                      </div>
+                      <div className="text-right">
+                        <div className="font-semibold text-white">{formatCurrency(deal.amount)}</div>
+                        <div className={`text-xs px-2 py-1 rounded-full inline-block ${
+                          deal.status === 'completed' ? 'bg-green-900 text-green-400' :
+                          deal.status === 'pending' ? 'bg-yellow-900 text-yellow-400' :
+                          'bg-blue-900 text-blue-400'
+                        }`}>
+                          {deal.status}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // Mount the component
+    ReactDOM.render(<DealershipDashboard />, document.getElementById('app'));
+  </script>
+
+</body></html>
