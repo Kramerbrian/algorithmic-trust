@@ -1,0 +1,26 @@
+version: "3.9"
+services:
+  redis:
+    image: redis:7-alpine
+    ports: [ "6379:6379" ]
+  api:
+    image: node:20-alpine
+    working_dir: /app
+    command: sh -lc "npm i && node api/server.js"
+    volumes: [ ".:/app" ]
+    environment:
+      - PORT=3001
+      - REDIS_URL=redis://redis:6379
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_ROLE=${SUPABASE_SERVICE_ROLE}
+    depends_on: [ redis ]
+    ports: [ "3001:3001" ]
+  worker:
+    image: node:20-alpine
+    working_dir: /app
+    command: sh -lc "npm i && node api/workers/probe.js"
+    volumes: [ ".:/app" ]
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - ANALYZE_WEBHOOK_URL=http://api:3001/v1/analyze
+    depends_on: [ redis, api ]

@@ -1,0 +1,13 @@
+{
+  "version": 2,
+  "crons": [
+    { "path": "/api/probes/kick",   "schedule": "2 12 * * *" },
+    { "path": "/api/probes/kick",   "schedule": "2 16 * * *" },
+    { "path": "/api/probes/kick",   "schedule": "2 20 * * *" },
+    { "path": "/api/cron/morning",  "schedule": "10 12 * * *" },
+    { "path": "/api/cron/noon",     "schedule": "10 16 * * *" },
+    { "path": "/api/cron/closing",  "schedule": "10 20 * * *" },
+    { "path": "/api/cron/retention","schedule": "0 4 * * *" },
+    { "path": "/api/alerts/check",  "schedule": "30 * * * *" }
+  ]
+}

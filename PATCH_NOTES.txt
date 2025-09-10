@@ -1,0 +1,7 @@
+- Added SSE stream at app/api/realtime/stream/route.ts (proxies Upstash subscribe).
+- Added lib/realtime/broadcast.ts and lib/realtime/sse-client.ts.
+- Modify app/api/webhooks/dealer-response/route.ts:
+    import { broadcastUpdate } from '@/lib/realtime/broadcast';
+    await broadcastUpdate(processed);
+- Install deps: npm i @upstash/redis
+- Env required: UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN

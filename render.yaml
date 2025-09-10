@@ -1,0 +1,43 @@
+# Render.com blueprint for API + worker
+services:
+  - type: web
+    name: dealershipai-api
+    env: docker
+    plan: standard
+    dockerfilePath: ./Dockerfile
+    autoDeploy: true
+    envVars:
+      - key: PORT
+        value: 3001
+      - key: REDIS_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE
+        sync: false
+      - key: GOOGLE_MAPS_API_KEY
+        sync: false
+      - key: CORS_ALLOW_ORIGINS
+        sync: false
+    healthCheckPath: /v1/healthz
+
+  - type: worker
+    name: dealershipai-worker
+    env: docker
+    dockerCommand: ["node","api/workers/probe.js"]
+    autoDeploy: true
+    envVars:
+      - key: ANALYZE_WEBHOOK_URL
+        fromService:
+          name: dealershipai-api
+          type: web
+          property: url
+        # will expand to https://... ; append route at runtime
+      - key: WORKER_DEALER
+        value: default
+      - key: WORKER_DEALER_LABEL
+        value: Default Dealer
+      - key: WORKER_INTERVAL_MS
+        value: 60000
+      - key: REDIS_URL
+        sync: false

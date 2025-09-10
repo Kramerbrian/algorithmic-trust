@@ -1,0 +1,1 @@
+import crypto from 'crypto'; export function signJSON(o,s){const p=JSON.stringify(o||{});return crypto.createHmac('sha256',String(s||'')).update(p).digest('hex')} export function verifyJSON(req,s){const g=String(req.headers['x-signature']||'');const w=signJSON(req.body||{},s);try{return crypto.timingSafeEqual(Buffer.from(g),Buffer.from(w))}catch{return false}}

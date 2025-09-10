@@ -1,0 +1,23 @@
+{
+  "name": "geo-sge",
+  "version": "0.5.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "api": "node api/server.js",
+    "worker": "node api/workers/probe.js",
+    "retention": "node api/cron/retention.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "bullmq": "^5.7.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "got": "^14.2.1",
+    "ioredis": "^5.4.1",
+    "morgan": "^1.10.0",
+    "node-cron": "^3.0.3",
+    "node-html-parser": "^6.1.11"
+  }
+}
