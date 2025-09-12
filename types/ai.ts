@@ -7,7 +7,7 @@ export interface AIInsight {
   severity?: Severity;
 }
 
-export interface DashboardData {
+expot interface DashboardData {
   competitors?: Array<{ name: string; price?: number; responseTime?: number }>;
   dailyVlume?: number[];
   conversionHistory?: number[]
