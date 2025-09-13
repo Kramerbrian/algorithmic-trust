@@ -1,0 +1,73 @@
+generator client { provider = "prisma-client-js" }
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model MysteryShop {
+  id           String   @id @default(uuid())
+  shopperName  String
+  shopperEmail String
+  shopperPhone String?
+  shopperType  String?
+  vehicleModel String?
+  tradeIn      String?
+  creditTier   String?
+  deployedAt   DateTime @default(now())
+  status       String   @default("pending")
+  score        Int      @default(0)
+  metadata     Json?
+  responses    DealerResponse[]
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model DealerResponse {
+  id            String      @id @default(uuid())
+  shopId        String
+  shop          MysteryShop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  dealerId      String
+  dealer        Dealership  @relation(fields: [dealerId], references: [id], onDelete: Cascade)
+  responseTime  Int
+  channel       String
+  quality       String
+  content       String
+  hasOTDPricing Boolean     @default(false)
+  hasTradeValue Boolean     @default(false)
+  followUpCount Int         @default(0)
+  metadata      Json?
+  createdAt     DateTime    @default(now())
+}
+
+model Dealership {
+  id               String           @id @default(uuid())
+  name             String
+  location         String?
+  contactEmail     String?
+  contactPhone     String?
+  avgResponseTime  Int?
+  totalResponses   Int              @default(0)
+  performanceScore Int              @default(0)
+  responses        DealerResponse[]
+  pricingData      PricingData[]
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+}
+
+model PricingData {
+  id           String     @id @default(uuid())
+  vehicleKey   String
+  dealershipId String
+  dealership   Dealership @relation(fields: [dealershipId], references: [id], onDelete: Cascade)
+  msrp         Decimal    @db.Decimal(10, 2)
+  salePrice    Decimal    @db.Decimal(10, 2)
+  savings      Decimal    @db.Decimal(10, 2)
+  incentives   String?
+  inStock      Int?
+  responseTime Int?
+  capturedAt   DateTime   @default(now())
+
+  @@unique([vehicleKey, dealershipId, capturedAt])
+}
